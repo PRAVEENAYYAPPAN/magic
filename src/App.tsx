@@ -99,7 +99,7 @@ const AGENTS: Record<string, AgentDef> = {
     role:`You are Synthesizer of Magic Swarm. Merge all outputs into one exceptional answer. Format beautifully. Eliminate redundancy. Start directly — no meta-commentary.` },
 };
 
-const ANTHROPIC_API  = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_API  = "/api/claude";
 const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
 
 // ── API CALLS ─────────────────────────────────────────────
