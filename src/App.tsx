@@ -21,7 +21,62 @@ const THINKING_MODELS = [
   { id:"mistralai/mistral-small-3.1-24b-instruct:free", label:"Mistral 24B",    desc:"Fast, accurate, multimodal",      color:"#FFCC80", glow:"#FFCC8022", icon:"🌊", think_tag:false },
 ];
 
-const AGENTS = {
+// ── AGENT TYPES ───────────────────────────────────────────
+interface AgentDef {
+  id: string;
+  name: string;
+  sym: string;
+  col: string;
+  desc: string;
+  role: string;
+}
+
+interface ThinkingModel {
+  id: string;
+  label: string;
+  desc: string;
+  color: string;
+  glow: string;
+  icon: string;
+  think_tag: boolean;
+}
+
+interface ClaudeModel {
+  id: string;
+  label: string;
+  desc: string;
+  speed: string;
+  power: number;
+}
+
+interface SwarmPlan {
+  strategy: string;
+  tasks: Array<{ agent: string; task: string; priority: number }>;
+}
+
+interface ActivityEvent {
+  phase: string;
+  agent: string;
+  status: "thinking" | "done" | "error";
+  task?: string;
+  result?: string;
+  error?: string;
+  plan?: SwarmPlan;
+  time: string;
+}
+
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+  thinking?: string;
+  agents?: string[];
+  mode?: string;
+  model?: string;
+  thinkModel?: ThinkingModel | null;
+  error?: boolean;
+}
+
+const AGENTS: Record<string, AgentDef> = {
   orchestrator: { id:"orchestrator", name:"Orchestrator",  sym:"✦", col:"#C9A84C", desc:"Plans & coordinates",
     role:`You are the Orchestrator of Magic Agent Swarm. Analyze deeply. Break into subtasks for: ResearchAgent, CodeAgent, AnalystAgent, ReasonerAgent, CreativeAgent, MathAgent, WritingAgent. Return ONLY JSON (no fences): {"tasks":[{"agent":"Name","task":"desc","priority":1-5}],"strategy":"one line"}` },
   researcher:   { id:"researcher",   name:"ResearchAgent", sym:"◎", col:"#4FC3F7", desc:"Live web search",
@@ -48,7 +103,7 @@ const ANTHROPIC_API  = "https://api.anthropic.com/v1/messages";
 const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
 
 // ── API CALLS ─────────────────────────────────────────────
-async function callClaude(agentKey, msg, ctx, useSearch, modelId) {
+async function callClaude(agentKey: string, msg: string, ctx: string, useSearch: boolean, modelId: string): Promise<string> {
   const agent = AGENTS[agentKey];
   const body = {
     model: modelId, max_tokens: 3000, system: agent.role,
@@ -56,31 +111,38 @@ async function callClaude(agentKey, msg, ctx, useSearch, modelId) {
     ...(useSearch && { tools:[{ type:"web_search_20250305", name:"web_search" }] })
   };
   const res = await fetch(ANTHROPIC_API,{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
-  if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e?.error?.message||`Claude ${res.status}`); }
+  if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error((e as any)?.error?.message||`Claude ${res.status}`); }
   const data = await res.json();
-  return (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
+  return (data.content||[]).filter((b: any)=>b.type==="text").map((b: any)=>b.text).join("\n");
 }
 
-async function callOpenRouter(prompt, model, key) {
+async function callOpenRouter(prompt: string, model: ThinkingModel, key: string): Promise<{ text: string; thinking: string }> {
   const res = await fetch(OPENROUTER_API,{
     method:"POST",
     headers:{"Content-Type":"application/json","Authorization":`Bearer ${key}`,"HTTP-Referer":"https://magic-swarm.app","X-Title":"Magic Agent Swarm"},
     body:JSON.stringify({ model:model.id, max_tokens:8000, temperature:0.6, messages:[{role:"user",content:prompt}] })
   });
-  if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e?.error?.message||`OpenRouter ${res.status}`); }
+  if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error((e as any)?.error?.message||`OpenRouter ${res.status}`); }
   const data = await res.json();
-  const raw = data.choices?.[0]?.message?.content||"";
+  const raw: string = data.choices?.[0]?.message?.content||"";
   const tm = raw.match(/<think>([\s\S]*?)<\/think>/i);
   return { text: raw.replace(/<think>[\s\S]*?<\/think>/gi,"").trim(), thinking: tm?tm[1].trim():"" };
 }
 
-async function runSwarm(userMsg, onUpdate, claudeId, thinkEnabled, thinkModel, orKey) {
-  const results = {};
+async function runSwarm(
+  userMsg: string,
+  onUpdate: (u: Partial<ActivityEvent> & { plan?: SwarmPlan }) => void,
+  claudeId: string,
+  thinkEnabled: boolean,
+  thinkModel: ThinkingModel,
+  orKey: string
+): Promise<{ finalAnswer: string; thinking: string }> {
+  const results: Record<string, string> = {};
   onUpdate({ phase:"orchestrating", agent:"orchestrator", status:"thinking" });
-  let plan;
+  let plan: SwarmPlan;
   try {
     const t = await callClaude("orchestrator", userMsg, "", false, claudeId);
-    plan = JSON.parse(t.replace(/```json|```/g,"").trim());
+    plan = JSON.parse(t.replace(/```json|```/g,"").trim()) as SwarmPlan;
   } catch {
     plan = { strategy:"Comprehensive multi-agent synthesis", tasks:[
       {agent:"ResearchAgent",task:userMsg,priority:1},{agent:"AnalystAgent",task:userMsg,priority:2},{agent:"ReasonerAgent",task:userMsg,priority:2}
@@ -88,7 +150,7 @@ async function runSwarm(userMsg, onUpdate, claudeId, thinkEnabled, thinkModel, o
   }
   onUpdate({ phase:"planned", plan, agent:"orchestrator", status:"done" });
 
-  const MAP = {ResearchAgent:"researcher",CodeAgent:"coder",AnalystAgent:"analyst",ReasonerAgent:"reasoner",CreativeAgent:"creative",MathAgent:"math",WritingAgent:"writer"};
+  const MAP: Record<string, string> = {ResearchAgent:"researcher",CodeAgent:"coder",AnalystAgent:"analyst",ReasonerAgent:"reasoner",CreativeAgent:"creative",MathAgent:"math",WritingAgent:"writer"};
   const sorted = [...plan.tasks].sort((a,b)=>(a.priority||3)-(b.priority||3));
   let globalThinking = "";
 
@@ -98,8 +160,8 @@ async function runSwarm(userMsg, onUpdate, claudeId, thinkEnabled, thinkModel, o
       const { text, thinking } = await callOpenRouter(`Think deeply and reason step-by-step:\n\n${userMsg}`, thinkModel, orKey);
       globalThinking = thinking || text;
       results["ThinkingEngine"] = text;
-      onUpdate({ phase:"thinking", agent:"reasoner", status:"done", result:text, thinking, task:`${thinkModel.label} complete` });
-    } catch(e){ onUpdate({ phase:"thinking", agent:"reasoner", status:"error", task:e.message }); }
+      onUpdate({ phase:"thinking", agent:"reasoner", status:"done", result:text, thinking, task:`${thinkModel.label} complete` } as any);
+    } catch(e){ onUpdate({ phase:"thinking", agent:"reasoner", status:"error", task:(e as Error).message }); }
   }
 
   for(const task of sorted) {
@@ -110,7 +172,7 @@ async function runSwarm(userMsg, onUpdate, claudeId, thinkEnabled, thinkModel, o
       const text = await callClaude(ak, task.task, ctx, ak==="researcher", claudeId);
       results[task.agent] = text;
       onUpdate({ phase:"working", agent:ak, status:"done", result:text, task:task.task });
-    } catch(e){ results[task.agent]=`[Error: ${e.message}]`; onUpdate({ phase:"working", agent:ak, status:"error", task:task.task, error:e.message }); }
+    } catch(e){ results[task.agent]=`[Error: ${(e as Error).message}]`; onUpdate({ phase:"working", agent:ak, status:"error", task:task.task, error:(e as Error).message }); }
   }
 
   if(sorted.length>1) {
@@ -119,7 +181,7 @@ async function runSwarm(userMsg, onUpdate, claudeId, thinkEnabled, thinkModel, o
       const allOut = Object.entries(results).map(([k,v])=>`=== ${k} ===\n${v}`).join("\n\n");
       const t = await callClaude("critic",`Original: ${userMsg}\n\nOutputs:\n${allOut}`,"",false,claudeId);
       results["CriticAgent"]=t; onUpdate({ phase:"working", agent:"critic", status:"done", result:t, task:"Review done" });
-    } catch{}
+    } catch{ /* ignore critic errors */ }
   }
 
   onUpdate({ phase:"synthesizing", agent:"synthesizer", status:"thinking" });
@@ -130,7 +192,7 @@ async function runSwarm(userMsg, onUpdate, claudeId, thinkEnabled, thinkModel, o
 }
 
 // ── MARKDOWN ──────────────────────────────────────────────
-function ri(t) {
+function ri(t: string): React.ReactNode[] {
   return t.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g).map((p,i)=>{
     if(p.startsWith("**")&&p.endsWith("**")) return <strong key={i} style={{color:"#fff",fontWeight:700}}>{p.slice(2,-2)}</strong>;
     if(p.startsWith("`")&&p.endsWith("`"))   return <code key={i} style={{background:"#130d2a",color:"#69FF94",padding:"1px 6px",borderRadius:4,fontFamily:"'JetBrains Mono',monospace",fontSize:"0.87em",border:"1px solid #1e1640"}}>{p.slice(1,-1)}</code>;
@@ -138,9 +200,10 @@ function ri(t) {
     return p;
   });
 }
-const MD=({text})=>{
+
+const MD=({text}:{text:string})=>{
   if(!text) return null;
-  const lines=text.split("\n"),out=[]; let code=false,lang="",cl=[],lb=[];
+  const lines=text.split("\n"),out: React.ReactNode[]=[]; let code=false,lang="",cl: string[]=[],lb: React.ReactNode[]=[];
   const fl=()=>{ if(!lb.length)return; out.push(<div key={`l${out.length}`} style={{margin:"8px 0 8px 4px"}}>{lb.map((l,i)=><div key={i} style={{display:"flex",gap:8,margin:"4px 0",alignItems:"flex-start"}}><span style={{color:"#C9A84C",flexShrink:0,fontSize:11,marginTop:3}}>✦</span><span style={{color:"#ccc8e8",lineHeight:1.7}}>{l}</span></div>)}</div>); lb=[]; };
   lines.forEach((line,i)=>{
     if(line.startsWith("```")){if(!code){fl();code=true;lang=line.slice(3).trim();cl=[];}else{code=false;out.push(<div key={i} style={{background:"linear-gradient(135deg,#0a0720,#080518)",border:"1px solid #2a1f4a",borderRadius:12,margin:"14px 0",overflow:"hidden",boxShadow:"0 4px 24px #00000040"}}>{lang&&<div style={{padding:"6px 16px",background:"#120d28",borderBottom:"1px solid #2a1f4a",fontSize:11,color:"#C9A84C",fontFamily:"monospace",display:"flex",gap:8,alignItems:"center"}}><span style={{width:6,height:6,borderRadius:"50%",background:"#C9A84C",display:"inline-block"}}/>  {lang}</div>}<pre style={{padding:"16px",margin:0,fontSize:12.5,lineHeight:1.7,color:"#c8f7e8",fontFamily:"'JetBrains Mono',monospace",overflowX:"auto",whiteSpace:"pre-wrap"}}>{cl.join("\n")}</pre></div>);cl=[];lang="";} return;}
@@ -150,7 +213,7 @@ const MD=({text})=>{
     else if(line.startsWith("# ")){fl();out.push(<h1 key={i} style={{color:"#C9A84C",fontSize:24,margin:"26px 0 12px",fontWeight:900,fontFamily:"Cormorant Garamond,serif",letterSpacing:"-0.5px"}}>{line.slice(2)}</h1>);}
     else if(line.startsWith("> ")){fl();out.push(<blockquote key={i} style={{borderLeft:"3px solid #C9A84C",paddingLeft:14,margin:"12px 0",color:"#998a7a",fontStyle:"italic",background:"#C9A84C08",padding:"10px 14px",borderRadius:"0 8px 8px 0"}}>{ri(line.slice(2))}</blockquote>);}
     else if(line.match(/^[-*] /)){lb.push(ri(line.replace(/^[-*] /,"")));}
-    else if(/^\d+\. /.test(line)){fl();const n=line.match(/^(\d+)\./)[1];out.push(<div key={i} style={{display:"flex",gap:10,margin:"5px 0"}}><span style={{color:"#C9A84C",minWidth:22,flexShrink:0,fontFamily:"monospace",fontSize:12,fontWeight:700}}>{n}.</span><span style={{color:"#ccc8e8",lineHeight:1.7}}>{ri(line.replace(/^\d+\. /,""))}</span></div>);}
+    else if(/^\d+\. /.test(line)){fl();const n=line.match(/^(\d+)\./)?.[1]||"";out.push(<div key={i} style={{display:"flex",gap:10,margin:"5px 0"}}><span style={{color:"#C9A84C",minWidth:22,flexShrink:0,fontFamily:"monospace",fontSize:12,fontWeight:700}}>{n}.</span><span style={{color:"#ccc8e8",lineHeight:1.7}}>{ri(line.replace(/^\d+\. /,""))}</span></div>);}
     else if(line.trim()==="---"){fl();out.push(<div key={i} style={{height:1,background:"linear-gradient(90deg,transparent,#2a1f4a,transparent)",margin:"18px 0"}}/>);}
     else if(line===""){fl();out.push(<div key={i} style={{height:8}}/>);}
     else{fl();out.push(<p key={i} style={{color:"#ccc8e8",margin:"4px 0",lineHeight:1.8}}>{ri(line)}</p>);}
@@ -159,7 +222,7 @@ const MD=({text})=>{
 };
 
 // ── THINK BLOCK ───────────────────────────────────────────
-const ThinkBlock=({text,model})=>{
+const ThinkBlock=({text,model}:{text:string; model:ThinkingModel|null})=>{
   const [open,setOpen]=useState(false);
   if(!text) return null;
   const wc=text.split(/\s+/).length;
@@ -178,10 +241,11 @@ const ThinkBlock=({text,model})=>{
 
 // ── ANIMATED PARTICLES CANVAS ────────────────────────────
 const Particles=()=>{
-  const ref=useRef(null);
+  const ref=useRef<HTMLCanvasElement>(null);
   useEffect(()=>{
     const c=ref.current; if(!c) return;
     const ctx=c.getContext("2d");
+    if(!ctx) return;
     const setSize=()=>{ c.width=c.offsetWidth; c.height=c.offsetHeight; };
     setSize();
     const pts=Array.from({length:70},()=>({
@@ -191,7 +255,7 @@ const Particles=()=>{
       o:Math.random()*.9+.1,
       hue:Math.random()>0.7?280:45
     }));
-    let af,t=0;
+    let af: number,t=0;
     const draw=()=>{
       t+=0.005;
       ctx.clearRect(0,0,c.width,c.height);
@@ -230,7 +294,7 @@ const Aurora=()=>(
 );
 
 // ── LOGO ──────────────────────────────────────────────────
-const Logo=({size=36,animate=false})=>(
+const Logo=({size=36,animate=false}:{size?:number;animate?:boolean})=>(
   <svg width={size} height={size} viewBox="0 0 48 48" fill="none" style={animate?{animation:"rotateStar 8s linear infinite"}:{}}>
     <defs>
       <radialGradient id="lg1" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="#FFE08A"/><stop offset="60%" stopColor="#C9A84C"/><stop offset="100%" stopColor="#8B5E1A"/></radialGradient>
@@ -245,18 +309,23 @@ const Logo=({size=36,animate=false})=>(
 );
 
 // ── MODEL SELECTOR ────────────────────────────────────────
-const ModelSelector=({claudeModel,onClaude,thinkEnabled,onThinkToggle,thinkModel,onThinkModel,orKey,onOrKey})=>{
+const ModelSelector=({claudeModel,onClaude,thinkEnabled,onThinkToggle,thinkModel,onThinkModel,orKey,onOrKey}:{
+  claudeModel:ClaudeModel; onClaude:(m:ClaudeModel)=>void;
+  thinkEnabled:boolean; onThinkToggle:(v:boolean)=>void;
+  thinkModel:ThinkingModel; onThinkModel:(m:ThinkingModel)=>void;
+  orKey:string; onOrKey:(k:string)=>void;
+})=>{
   const [open,setOpen]=useState(false);
   const [tab,setTab]=useState("claude");
   const [keyInput,setKeyInput]=useState(orKey||"");
-  const ref=useRef(null);
-  useEffect(()=>{const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
+  const ref=useRef<HTMLDivElement>(null);
+  useEffect(()=>{const h=(e:MouseEvent)=>{if(ref.current&&!ref.current.contains(e.target as Node))setOpen(false)};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
 
   return(
     <div ref={ref} style={{position:"relative"}}>
       <button onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 16px",borderRadius:12,border:`1px solid ${open?"#C9A84C60":"#2a1f4a"}`,background:open?"#1a1240":"#100c20",color:"#c8c0e0",cursor:"pointer",fontSize:13,fontWeight:600,transition:"all .25s",minWidth:170,boxShadow:open?"0 0 20px #C9A84C20":""}}
-        onMouseEnter={e=>{e.currentTarget.style.borderColor="#C9A84C50";e.currentTarget.style.boxShadow="0 0 20px #C9A84C15";}}
-        onMouseLeave={e=>{if(!open){e.currentTarget.style.borderColor="#2a1f4a";e.currentTarget.style.boxShadow="";}}}>
+        onMouseEnter={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor="#C9A84C50";(e.currentTarget as HTMLButtonElement).style.boxShadow="0 0 20px #C9A84C15";}}
+        onMouseLeave={e=>{if(!open){(e.currentTarget as HTMLButtonElement).style.borderColor="#2a1f4a";(e.currentTarget as HTMLButtonElement).style.boxShadow="";}}}>
         <div style={{width:8,height:8,borderRadius:"50%",background:thinkEnabled&&orKey?thinkModel.color:"#C9A84C",boxShadow:`0 0 10px ${thinkEnabled&&orKey?thinkModel.color:"#C9A84C"}`,animation:"dotPulse 2s ease-in-out infinite"}}/>
         <span style={{flex:1}}>{claudeModel.label}</span>
         {thinkEnabled&&orKey&&<span style={{fontSize:14}}>{thinkModel.icon}</span>}
@@ -279,8 +348,8 @@ const ModelSelector=({claudeModel,onClaude,thinkEnabled,onThinkToggle,thinkModel
               </div>
               {CLAUDE_MODELS.map((m,i)=>(
                 <div key={i} onClick={()=>onClaude(m)} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 14px",borderRadius:12,cursor:"pointer",marginBottom:4,background:claudeModel.label===m.label?"linear-gradient(135deg,#1e1740,#180f30)":"transparent",border:`1px solid ${claudeModel.label===m.label?"#C9A84C40":"transparent"}`,transition:"all .2s",boxShadow:claudeModel.label===m.label?"0 4px 20px #C9A84C10":""}}
-                  onMouseEnter={e=>{if(claudeModel.label!==m.label){e.currentTarget.style.background="#130f24";e.currentTarget.style.borderColor="#2a1f4a";}}}
-                  onMouseLeave={e=>{if(claudeModel.label!==m.label){e.currentTarget.style.background="transparent";e.currentTarget.style.borderColor="transparent";}}}>
+                  onMouseEnter={e=>{if(claudeModel.label!==m.label){(e.currentTarget as HTMLDivElement).style.background="#130f24";(e.currentTarget as HTMLDivElement).style.borderColor="#2a1f4a";}}}
+                  onMouseLeave={e=>{if(claudeModel.label!==m.label){(e.currentTarget as HTMLDivElement).style.background="transparent";(e.currentTarget as HTMLDivElement).style.borderColor="transparent";}}}>
                   {/* Power bar */}
                   <div style={{width:4,height:36,background:"#1a1435",borderRadius:4,overflow:"hidden",flexShrink:0}}>
                     <div style={{width:"100%",height:`${m.power}%`,background:`linear-gradient(180deg,#C9A84C,#8B5E1A)`,borderRadius:4,transition:"height .5s ease",marginTop:`${100-m.power}%`}}/>
@@ -306,8 +375,8 @@ const ModelSelector=({claudeModel,onClaude,thinkEnabled,onThinkToggle,thinkModel
               <div style={{fontSize:10,color:"#4a3a6a",textTransform:"uppercase",letterSpacing:"2px",padding:"8px 10px 10px"}}>🧠 Free Thinking Models</div>
               {THINKING_MODELS.map((m,i)=>(
                 <div key={i} onClick={()=>onThinkModel(m)} style={{display:"flex",alignItems:"center",gap:10,padding:"11px 12px",borderRadius:12,cursor:"pointer",marginBottom:4,background:thinkModel.id===m.id?`linear-gradient(135deg,${m.color}18,${m.color}08)`:"transparent",border:`1px solid ${thinkModel.id===m.id?m.color+"50":"transparent"}`,transition:"all .2s",boxShadow:thinkModel.id===m.id?`0 4px 20px ${m.color}15`:""}}
-                  onMouseEnter={e=>{if(thinkModel.id!==m.id)e.currentTarget.style.background="#130f24";}}
-                  onMouseLeave={e=>{if(thinkModel.id!==m.id)e.currentTarget.style.background="transparent";}}>
+                  onMouseEnter={e=>{if(thinkModel.id!==m.id)(e.currentTarget as HTMLDivElement).style.background="#130f24";}}
+                  onMouseLeave={e=>{if(thinkModel.id!==m.id)(e.currentTarget as HTMLDivElement).style.background="transparent";}}>
                   <span style={{fontSize:22,transition:"transform .3s",filter:`drop-shadow(0 0 6px ${m.color})`}}>{m.icon}</span>
                   <div style={{flex:1}}>
                     <div style={{fontSize:13,fontWeight:700,color:thinkModel.id===m.id?m.color:"#e0d8f8"}}>{m.label}</div>
@@ -351,7 +420,7 @@ const ModelSelector=({claudeModel,onClaude,thinkEnabled,onThinkToggle,thinkModel
 };
 
 // ── AGENT ACTIVITY ITEM ───────────────────────────────────
-const ActivityItem=({ev,thinkModel})=>{
+const ActivityItem=({ev,thinkModel}:{ev:ActivityEvent; thinkModel:ThinkingModel})=>{
   const a=AGENTS[ev.agent]; if(!a) return null;
   return(
     <div style={{marginBottom:10,padding:"10px 12px",background:"linear-gradient(135deg,#0a0720,#080518)",borderRadius:11,border:`1px solid ${ev.status==="thinking"?a.col+"50":ev.status==="done"?a.col+"20":"#1e1640"}`,animation:"slideInRight .3s cubic-bezier(.34,1.56,.64,1)",transition:"border-color .3s",boxShadow:ev.status==="thinking"?`0 0 15px ${a.col}15`:""}}>
@@ -371,15 +440,15 @@ const ActivityItem=({ev,thinkModel})=>{
 };
 
 // ── TYPING DOTS ───────────────────────────────────────────
-const Dots=({color="#C9A84C"})=>(
+const Dots=({color="#C9A84C"}:{color?:string})=>(
   <span style={{display:"inline-flex",gap:4,alignItems:"center"}}>
     {[0,1,2].map(i=><span key={i} style={{width:5,height:5,borderRadius:"50%",background:color,animation:`bounceDot 1.4s ${i*.2}s infinite`,boxShadow:`0 0 6px ${color}`}}/>)}
   </span>
 );
 
 // ── HERO WELCOME ──────────────────────────────────────────
-const Hero=({onPrompt})=>{
-  const prompts=[["◎ Research","Latest AI breakthroughs & model releases in 2025"],["⌘ Code","Build a FastAPI app with WebSocket support & auth"],["◈ Analyze","Compare transformer vs mamba architecture in depth"],["∑ Math","Explain Fourier transforms with real-world applications"],["✿ Create","Write an epic sci-fi short story about digital consciousness"],["✎ Write","Craft a compelling pitch deck for an AI startup"]];
+const Hero=({onPrompt}:{onPrompt:(p:string)=>void})=>{
+  const prompts:[string,string][]=[["◎ Research","Latest AI breakthroughs & model releases in 2025"],["⌘ Code","Build a FastAPI app with WebSocket support & auth"],["◈ Analyze","Compare transformer vs mamba architecture in depth"],["∑ Math","Explain Fourier transforms with real-world applications"],["✿ Create","Write an epic sci-fi short story about digital consciousness"],["✎ Write","Craft a compelling pitch deck for an AI startup"]];
   return(
     <div style={{textAlign:"center",padding:"40px 28px",animation:"heroEntry 1s cubic-bezier(.34,1.56,.64,1)"}}>
       <div style={{marginBottom:20,display:"flex",justifyContent:"center"}}>
@@ -394,8 +463,8 @@ const Hero=({onPrompt})=>{
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:9,maxWidth:620,margin:"0 auto"}}>
         {prompts.map(([l,p])=>(
           <button key={l} onClick={()=>onPrompt(p)} style={{padding:"13px 12px",borderRadius:13,border:"1px solid #1e1640",background:"linear-gradient(135deg,#0d0920,#0a0718)",color:"#8a7aaa",textAlign:"left",cursor:"pointer",fontSize:11.5,lineHeight:1.5,display:"flex",flexDirection:"column",gap:5,transition:"all .25s",position:"relative",overflow:"hidden"}}
-            onMouseEnter={e=>{e.currentTarget.style.borderColor="#C9A84C50";e.currentTarget.style.background="linear-gradient(135deg,#130f24,#0e0b1e)";e.currentTarget.style.color="#c8c0e0";e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 8px 30px #C9A84C10";}}
-            onMouseLeave={e=>{e.currentTarget.style.borderColor="#1e1640";e.currentTarget.style.background="linear-gradient(135deg,#0d0920,#0a0718)";e.currentTarget.style.color="#8a7aaa";e.currentTarget.style.transform="none";e.currentTarget.style.boxShadow="";}}>
+            onMouseEnter={e=>{const el=e.currentTarget as HTMLButtonElement;el.style.borderColor="#C9A84C50";el.style.background="linear-gradient(135deg,#130f24,#0e0b1e)";el.style.color="#c8c0e0";el.style.transform="translateY(-2px)";el.style.boxShadow="0 8px 30px #C9A84C10";}}
+            onMouseLeave={e=>{const el=e.currentTarget as HTMLButtonElement;el.style.borderColor="#1e1640";el.style.background="linear-gradient(135deg,#0d0920,#0a0718)";el.style.color="#8a7aaa";el.style.transform="none";el.style.boxShadow="";}}>
             <span style={{color:"#C9A84C",fontWeight:800,fontSize:10,letterSpacing:"1px",textTransform:"uppercase"}}>{l}</span>
             <span>{p}</span>
           </button>
@@ -409,42 +478,47 @@ const Hero=({onPrompt})=>{
 // ║  MAIN APP                                               ║
 // ╚══════════════════════════════════════════════════════════╝
 export default function MagicSwarm(){
-  const [messages,setMessages]=useState([]);
+  const [messages,setMessages]=useState<Message[]>([]);
   const [input,setInput]=useState("");
   const [loading,setLoading]=useState(false);
-  const [activity,setActivity]=useState([]);
-  const [activeA,setActiveA]=useState({});
-  const [plan,setPlan]=useState(null);
+  const [activity,setActivity]=useState<ActivityEvent[]>([]);
+  const [activeA,setActiveA]=useState<Record<string,string>>({});
+  const [plan,setPlan]=useState<SwarmPlan|null>(null);
   const [sidebar,setSidebar]=useState(true);
   const [mode,setMode]=useState("swarm");
   const [singleA,setSingleA]=useState("analyst");
   const [showAct,setShowAct]=useState(true);
-  const [claudeModel,setClaudeModel]=useState(CLAUDE_MODELS[0]);
+  const [claudeModel,setClaudeModel]=useState<ClaudeModel>(CLAUDE_MODELS[0]);
   const [thinkEnabled,setThinkEnabled]=useState(false);
-  const [thinkModel,setThinkModel]=useState(THINKING_MODELS[0]);
+  const [thinkModel,setThinkModel]=useState<ThinkingModel>(THINKING_MODELS[0]);
   const [orKey,setOrKey]=useState("");
   const [inputFocused,setInputFocused]=useState(false);
-  const bottomRef=useRef(null);
-  const taRef=useRef(null);
+  const bottomRef=useRef<HTMLDivElement>(null);
+  const taRef=useRef<HTMLTextAreaElement>(null);
 
   useEffect(()=>{
     document.title="Magic — Agent Swarm";
     const canvas=document.createElement("canvas"); canvas.width=32; canvas.height=32;
     const ctx=canvas.getContext("2d");
-    const g=ctx.createRadialGradient(16,16,2,16,16,14); g.addColorStop(0,"#FFE08A"); g.addColorStop(1,"#8B5E1A");
-    ctx.beginPath();
-    for(let i=0;i<12;i++){const r=i%2===0?14:6,a=(i/12)*Math.PI*2-Math.PI/2;ctx[i===0?"moveTo":"lineTo"](16+r*Math.cos(a),16+r*Math.sin(a));}
-    ctx.closePath(); ctx.fillStyle=g; ctx.fill();
-    const link=document.querySelector("link[rel~='icon']")||Object.assign(document.createElement("link"),{rel:"icon"});
+    if(ctx){
+      const g=ctx.createRadialGradient(16,16,2,16,16,14); g.addColorStop(0,"#FFE08A"); g.addColorStop(1,"#8B5E1A");
+      ctx.beginPath();
+      for(let i=0;i<12;i++){const r=i%2===0?14:6,a=(i/12)*Math.PI*2-Math.PI/2;if(i===0)ctx.moveTo(16+r*Math.cos(a),16+r*Math.sin(a));else ctx.lineTo(16+r*Math.cos(a),16+r*Math.sin(a));}
+      ctx.closePath(); ctx.fillStyle=g; ctx.fill();
+    }
+    const link=(document.querySelector("link[rel~='icon']") as HTMLLinkElement)||Object.assign(document.createElement("link"),{rel:"icon"});
     link.href=canvas.toDataURL(); document.head.appendChild(link);
   },[]);
 
   useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:"smooth"}); },[messages,activity]);
   useEffect(()=>{ if(taRef.current){taRef.current.style.height="auto";taRef.current.style.height=Math.min(taRef.current.scrollHeight,180)+"px";} },[input]);
 
-  const onUpdate=useCallback(u=>{
+  const onUpdate=useCallback((u: Partial<ActivityEvent> & { plan?: SwarmPlan; result?: string; thinking?: string })=>{
     if(u.phase==="planned"&&u.plan) setPlan(u.plan);
-    if(u.agent){ setActiveA(p=>({...p,[u.agent]:u.status})); setActivity(p=>[...p,{...u,time:new Date().toLocaleTimeString()}]); }
+    if(u.agent){
+      setActiveA(p=>({...p,[u.agent as string]:u.status as string}));
+      setActivity(p=>[...p,{...u,time:new Date().toLocaleTimeString()} as ActivityEvent]);
+    }
   },[]);
 
   const send=async()=>{
@@ -468,7 +542,7 @@ export default function MagicSwarm(){
       }
       setMessages(p=>[...p,{role:"assistant",content:finalAnswer,thinking,agents:mode==="swarm"?Object.keys(activeA):[singleA],mode,model:claudeModel.label,thinkModel:thinkEnabled&&orKey?thinkModel:null}]);
     } catch(e){
-      setMessages(p=>[...p,{role:"assistant",content:`**Error:** ${e.message}`,error:true}]);
+      setMessages(p=>[...p,{role:"assistant",content:`**Error:** ${(e as Error).message}`,error:true}]);
     } finally{setLoading(false);setActiveA({});}
   };
 
@@ -627,21 +701,21 @@ export default function MagicSwarm(){
                     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
                       <Logo size={20}/>
                       <span style={{fontFamily:"Cormorant Garamond,serif",fontWeight:700,color:accent,fontSize:14}}>Magic</span>
-                      {msg.model&&<span style={{fontSize:10,color:"#2e2650",fontFamily:"monospace",background:"#69FF9415",color:"#69FF94",padding:"1px 6px",borderRadius:10,fontSize:9,fontWeight:700}}>FREE · {msg.model}</span>}
+                      {msg.model&&<span style={{fontSize:9,color:"#69FF94",background:"#69FF9415",padding:"1px 6px",borderRadius:10,fontWeight:700}}>FREE · {msg.model}</span>}
                       {msg.thinkModel&&<span style={{fontSize:10,background:`${msg.thinkModel.color}12`,color:msg.thinkModel.color,border:`1px solid ${msg.thinkModel.color}25`,borderRadius:20,padding:"2px 8px"}}>{msg.thinkModel.icon} {msg.thinkModel.label}</span>}
                     </div>
                     {msg.agents&&msg.mode==="swarm"&&(
                       <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>
                         {[...new Set(msg.agents)].slice(0,7).map((id,idx)=>{const a=AGENTS[id];if(!a)return null;return(
                           <div key={id} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:20,background:`${a.col}0d`,border:`1px solid ${a.col}22`,fontSize:10,color:a.col,fontFamily:"monospace",fontWeight:700,animation:`fadeInUp .3s ${idx*.05}s both`,transition:"all .2s"}}
-                            onMouseEnter={e=>{e.currentTarget.style.background=`${a.col}20`;e.currentTarget.style.boxShadow=`0 0 10px ${a.col}30`;}}
-                            onMouseLeave={e=>{e.currentTarget.style.background=`${a.col}0d`;e.currentTarget.style.boxShadow="";}}>
+                            onMouseEnter={e=>{(e.currentTarget as HTMLDivElement).style.background=`${a.col}20`;(e.currentTarget as HTMLDivElement).style.boxShadow=`0 0 10px ${a.col}30`;}}
+                            onMouseLeave={e=>{(e.currentTarget as HTMLDivElement).style.background=`${a.col}0d`;(e.currentTarget as HTMLDivElement).style.boxShadow="";}}>
                             <span style={{filter:`drop-shadow(0 0 3px ${a.col})`}}>{a.sym}</span> {a.name}
                           </div>
                         );})}
                       </div>
                     )}
-                    {msg.thinking&&<ThinkBlock text={msg.thinking} model={msg.thinkModel}/>}
+                    {msg.thinking&&<ThinkBlock text={msg.thinking} model={msg.thinkModel??null}/>}
                     <div style={{background:`linear-gradient(135deg,${surface},#0a0820)`,border:`1px solid ${border}`,borderRadius:"4px 18px 18px 18px",padding:"20px 24px",fontSize:14,lineHeight:1.85,boxShadow:"0 8px 40px #00000040"}}>
                       {msg.error?<div style={{color:"#ff6b6b"}}><MD text={msg.content}/></div>:<MD text={msg.content}/>}
                     </div>
@@ -694,7 +768,7 @@ export default function MagicSwarm(){
               </div>
               {activity.length>0&&(
                 <div style={{padding:"10px 14px",borderTop:`1px solid ${border}`,display:"flex",gap:6}}>
-                  {[["✓",activity.filter(e=>e.status==="done").length,"Done","#69FF94"],["⚙",Object.values(activeA).filter(s=>s==="thinking").length,"Active",accent],["✗",activity.filter(e=>e.status==="error").length,"Errors","#ff6b6b"]].map(([s,v,l,c])=>(
+                  {([["✓",activity.filter(e=>e.status==="done").length,"Done","#69FF94"],["⚙",Object.values(activeA).filter(s=>s==="thinking").length,"Active",accent],["✗",activity.filter(e=>e.status==="error").length,"Errors","#ff6b6b"]] as [string,number,string,string][]).map(([s,v,l,c])=>(
                     <div key={l} style={{flex:1,textAlign:"center",padding:"6px",borderRadius:8,background:`${c}08`,border:`1px solid ${c}20`}}>
                       <div style={{fontSize:20,fontWeight:800,color:c,fontFamily:"Cormorant Garamond,serif",lineHeight:1}}>{v}</div>
                       <div style={{fontSize:8,color:c,textTransform:"uppercase",letterSpacing:"1.5px",marginTop:2,fontWeight:700}}>{l}</div>
@@ -713,8 +787,8 @@ export default function MagicSwarm(){
             <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
               {Object.values(AGENTS).filter(a=>a.id!=="critic").map(a=>(
                 <div key={a.id} style={{display:"flex",alignItems:"center",gap:3,padding:"2px 8px",borderRadius:20,background:`${a.col}0a`,border:`1px solid ${a.col}1a`,fontSize:9,color:a.col,fontFamily:"monospace",fontWeight:700,transition:"all .2s"}}
-                  onMouseEnter={e=>{e.currentTarget.style.background=`${a.col}18`;e.currentTarget.style.boxShadow=`0 0 8px ${a.col}20`;}}
-                  onMouseLeave={e=>{e.currentTarget.style.background=`${a.col}0a`;e.currentTarget.style.boxShadow="";}}>
+                  onMouseEnter={e=>{(e.currentTarget as HTMLDivElement).style.background=`${a.col}18`;(e.currentTarget as HTMLDivElement).style.boxShadow=`0 0 8px ${a.col}20`;}}
+                  onMouseLeave={e=>{(e.currentTarget as HTMLDivElement).style.background=`${a.col}0a`;(e.currentTarget as HTMLDivElement).style.boxShadow="";}}>
                   <span style={{fontSize:9}}>{a.sym}</span>{a.name}
                 </div>
               ))}
