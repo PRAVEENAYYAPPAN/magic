@@ -768,7 +768,7 @@ export default function MagicSwarm(){
               </div>
               {activity.length>0&&(
                 <div style={{padding:"10px 14px",borderTop:`1px solid ${border}`,display:"flex",gap:6}}>
-                  {([["✓",activity.filter(e=>e.status==="done").length,"Done","#69FF94"],["⚙",Object.values(activeA).filter(s=>s==="thinking").length,"Active",accent],["✗",activity.filter(e=>e.status==="error").length,"Errors","#ff6b6b"]] as [string,number,string,string][]).map(([s,v,l,c])=>(
+                  {([["✓",activity.filter(e=>e.status==="done").length,"Done","#69FF94"],["⚙",Object.values(activeA).filter(s=>s==="thinking").length,"Active",accent],["✗",activity.filter(e=>e.status==="error").length,"Errors","#ff6b6b"]] as [string,number,string,string][]).map(([_s,v,l,c])=>(
                     <div key={l} style={{flex:1,textAlign:"center",padding:"6px",borderRadius:8,background:`${c}08`,border:`1px solid ${c}20`}}>
                       <div style={{fontSize:20,fontWeight:800,color:c,fontFamily:"Cormorant Garamond,serif",lineHeight:1}}>{v}</div>
                       <div style={{fontSize:8,color:c,textTransform:"uppercase",letterSpacing:"1.5px",marginTop:2,fontWeight:700}}>{l}</div>
